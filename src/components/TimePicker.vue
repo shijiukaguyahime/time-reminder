@@ -14,6 +14,10 @@ const emit = defineEmits<{
 const hours = Array.from({ length: 24 }, (_, i) => i);
 const minutes = Array.from({ length: 60 }, (_, i) => i);
 
+// Triple the lists for infinite scroll illusion
+const displayHours = [...hours, ...hours, ...hours];
+const displayMinutes = [...minutes, ...minutes, ...minutes];
+
 const hourContainer = ref<HTMLElement | null>(null);
 const minuteContainer = ref<HTMLElement | null>(null);
 const itemHeight = 40; // matches css height
@@ -28,26 +32,51 @@ function pad(n: number) {
   return n.toString().padStart(2, '0');
 }
 
-function scrollTo(container: HTMLElement | null, value: number) {
+function scrollTo(container: HTMLElement | null, value: number, type: 'hour' | 'minute') {
   if (!container) return;
-  container.scrollTop = value * itemHeight;
+  // Start in the middle set
+  const offset = type === 'hour' ? 24 : 60;
+  const index = offset + value;
+  container.scrollTop = index * itemHeight - 80; // 80 = (200/2) - (40/2)
 }
 
 function handleScroll(type: 'hour' | 'minute', e: Event) {
-  if (isDragging) return; // Don't snap while dragging (handled on mouseup/leave)
+  if (isDragging) return; 
 
   const target = e.target as HTMLElement;
+  checkLoop(target, type);
   snap(target, type);
 }
 
+function checkLoop(target: HTMLElement, type: 'hour' | 'minute') {
+  const count = type === 'hour' ? 24 : 60;
+  const singleSetHeight = count * itemHeight;
+  const centerIndex = Math.round((target.scrollTop + 80) / itemHeight);
+  
+  // If we are in the first set (too high), jump to middle
+  if (centerIndex < count) {
+    target.scrollTop += singleSetHeight;
+  } 
+  // If we are in the third set (too low), jump to middle
+  else if (centerIndex >= count * 2) {
+    target.scrollTop -= singleSetHeight;
+  }
+}
+
 function snap(target: HTMLElement, type: 'hour' | 'minute') {
-  const index = Math.round(target.scrollTop / itemHeight);
-  if (type === 'hour') {
-    const val = hours[index];
-    if (val !== undefined && val !== props.hour) emit('update:hour', val);
-  } else {
-    const val = minutes[index];
-    if (val !== undefined && val !== props.minute) emit('update:minute', val);
+  const centerIndex = Math.round((target.scrollTop + 80) / itemHeight);
+  // Safe access using modulo or just relying on the array logic
+  // Since we jump, centerIndex should be roughly in [count, 2*count]
+  // But strictly, we can just look up the value
+  const list = type === 'hour' ? displayHours : displayMinutes;
+  const val = list[centerIndex];
+  
+  if (val !== undefined) {
+    if (type === 'hour') {
+      if (val !== props.hour) emit('update:hour', val);
+    } else {
+      if (val !== props.minute) emit('update:minute', val);
+    }
   }
 }
 
@@ -79,10 +108,13 @@ function onMouseUp() {
   
   // Identify type based on container ref
   const type = currentContainer === hourContainer.value ? 'hour' : 'minute';
+  
+  checkLoop(currentContainer, type);
   snap(currentContainer, type);
-  // Manually smooth scroll to snap point if needed (CSS snap handles it mostly, but explicit set helps)
-  const index = Math.round(currentContainer.scrollTop / itemHeight);
-  currentContainer.scrollTo({ top: index * itemHeight, behavior: 'smooth' });
+  
+  // Manually smooth scroll to snap point
+  const centerIndex = Math.round((currentContainer.scrollTop + 80) / itemHeight);
+  currentContainer.scrollTo({ top: centerIndex * itemHeight - 80, behavior: 'smooth' });
 
   currentContainer = null;
   document.removeEventListener('mousemove', onMouseMove);
@@ -92,21 +124,27 @@ function onMouseUp() {
 // Initial scroll position
 onMounted(() => {
   nextTick(() => {
-    scrollTo(hourContainer.value, props.hour);
-    scrollTo(minuteContainer.value, props.minute);
+    scrollTo(hourContainer.value, props.hour, 'hour');
+    scrollTo(minuteContainer.value, props.minute, 'minute');
   });
 });
 
 // Watch for external changes
 watch(() => props.hour, (newVal) => {
-  if (hourContainer.value && !isDragging && Math.round(hourContainer.value.scrollTop / itemHeight) !== newVal) {
-    scrollTo(hourContainer.value, newVal);
+  if (hourContainer.value && !isDragging) {
+    const centerIndex = Math.round((hourContainer.value.scrollTop + 80) / itemHeight);
+    if (displayHours[centerIndex] !== newVal) {
+       scrollTo(hourContainer.value, newVal, 'hour');
+    }
   }
 });
 
 watch(() => props.minute, (newVal) => {
-  if (minuteContainer.value && !isDragging && Math.round(minuteContainer.value.scrollTop / itemHeight) !== newVal) {
-    scrollTo(minuteContainer.value, newVal);
+  if (minuteContainer.value && !isDragging) {
+    const centerIndex = Math.round((minuteContainer.value.scrollTop + 80) / itemHeight);
+    if (displayMinutes[centerIndex] !== newVal) {
+      scrollTo(minuteContainer.value, newVal, 'minute');
+    }
   }
 });
 </script>
@@ -123,11 +161,9 @@ watch(() => props.minute, (newVal) => {
       @scroll.passive="handleScroll('hour', $event)"
       @mousedown="onMouseDown($event, hourContainer)"
     >
-      <div class="spacer"></div>
-      <div v-for="h in hours" :key="h" class="item" :class="{ active: h === hour }">
+      <div v-for="(h, i) in displayHours" :key="i" class="item" :class="{ active: h === hour }">
         {{ pad(h) }}
       </div>
-      <div class="spacer"></div>
     </div>
 
     <div class="colon">:</div>
@@ -139,11 +175,9 @@ watch(() => props.minute, (newVal) => {
       @scroll.passive="handleScroll('minute', $event)"
       @mousedown="onMouseDown($event, minuteContainer)"
     >
-      <div class="spacer"></div>
-      <div v-for="m in minutes" :key="m" class="item" :class="{ active: m === minute }">
+      <div v-for="(m, i) in displayMinutes" :key="i" class="item" :class="{ active: m === minute }">
         {{ pad(m) }}
       </div>
-      <div class="spacer"></div>
     </div>
   </div>
 </template>
@@ -208,10 +242,6 @@ watch(() => props.minute, (newVal) => {
   color: #000;
   font-weight: 600;
   transform: scale(1.1);
-}
-
-.spacer {
-  height: 80px; /* (200 - 40) / 2 */
 }
 
 .colon {

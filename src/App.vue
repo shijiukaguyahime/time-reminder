@@ -42,6 +42,7 @@ const editingId = ref<string | null>(null);
 const isSettingsOpen = ref(false);
 const showThemeNotification = ref(false);
 const notificationData = ref({ title: '', body: '' });
+const nextAlarmText = ref('');
 
 // Selection Mode State
 const isSelectionMode = ref(false);
@@ -95,11 +96,13 @@ onMounted(() => {
   loadSettings();
   requestNotificationPermission();
   startScheduler();
+  updateNextAlarmText(); // Initial check
 });
 
 // Persist alarms
 watch(alarms, () => {
   saveAlarms();
+  updateNextAlarmText();
 }, { deep: true });
 
 // Persist settings
@@ -188,6 +191,9 @@ function startScheduler() {
     if (currentMinuteStr === lastRunMinute) return;
     lastRunMinute = currentMinuteStr;
 
+    // Update countdown text every minute
+    updateNextAlarmText();
+
     const currentHour = now.hour();
     const currentMinute = now.minute();
     const todayStr = now.format('YYYY-MM-DD');
@@ -212,6 +218,90 @@ function startScheduler() {
       }
     });
   }, 1000);
+}
+
+// --- Helper Logic ---
+
+function updateNextAlarmText() {
+  const now = dayjs();
+  let minDiff = Infinity;
+  let nextAlarm: dayjs.Dayjs | null = null;
+
+  alarms.value.forEach(alarm => {
+    if (!alarm.enabled) return;
+    const occurrence = getNextOccurrence(alarm, now);
+    if (occurrence) {
+      const diff = occurrence.diff(now);
+      if (diff < minDiff) {
+        minDiff = diff;
+        nextAlarm = occurrence;
+      }
+    }
+  });
+
+  if (nextAlarm) {
+    const diffDays = Math.floor(minDiff / (24 * 60 * 60 * 1000));
+    const diffHours = Math.floor((minDiff % (24 * 60 * 60 * 1000)) / (60 * 60 * 1000));
+    const diffMinutes = Math.floor((minDiff % (60 * 60 * 1000)) / (60 * 1000));
+
+    let text = '';
+    if (diffDays > 0) {
+      text = `${diffDays}天${diffHours}小时${diffMinutes}分后响铃`;
+    } else if (diffHours > 0) {
+      text = `${diffHours}小时${diffMinutes}分后响铃`;
+    } else if (diffMinutes > 0) {
+      text = `${diffMinutes}分后响铃`;
+    } else {
+      text = '不到1分钟后响铃';
+    }
+    nextAlarmText.value = text;
+  } else {
+    nextAlarmText.value = '';
+  }
+}
+
+function getNextOccurrence(alarm: Alarm, now: dayjs.Dayjs): dayjs.Dayjs | null {
+  let checkDate = now.hour(alarm.hour).minute(alarm.minute).second(0).millisecond(0);
+  
+  // If the time has passed today (or is extremely close), start checking from tomorrow
+  // We use a small buffer (e.g. 59 seconds) to avoid skipping current minute if we are at :00
+  if (checkDate.isBefore(now)) {
+    checkDate = checkDate.add(1, 'day');
+  }
+
+  // Check up to 60 days
+  for (let i = 0; i < 60; i++) {
+    if (isDayValid(alarm, checkDate)) {
+      return checkDate;
+    }
+    checkDate = checkDate.add(1, 'day');
+  }
+  
+  return null;
+}
+
+function isDayValid(alarm: Alarm, date: dayjs.Dayjs): boolean {
+    const { type, customDays, shift } = alarm.repeat;
+    const currentDay = date.day();
+    
+    if (type === 'once') return true;
+    if (type === 'daily') return true;
+    if (type === 'workdays') return currentDay >= 1 && currentDay <= 5;
+    if (type === 'mon_sat') return currentDay >= 1 && currentDay <= 6;
+    if (type === 'custom') return customDays.includes(currentDay);
+    
+    if (type === 'shift' && shift) {
+        const start = dayjs(shift.startDate).startOf('day');
+        const target = date.startOf('day');
+        const diffDays = target.diff(start, 'day');
+        if (diffDays < 0) return false;
+        
+        const cycleLength = shift.workDays + shift.restDays;
+        const positionInCycle = diffDays % cycleLength;
+        return positionInCycle < shift.workDays;
+    }
+    
+    return false;
 }
 
 function shouldTrigger(alarm: Alarm, now: dayjs.Dayjs, todayStr: string, currentDay: number): boolean {
@@ -466,6 +556,7 @@ function closeSettings() {
     <div class="content" v-show="!isEditing && !isSettingsOpen" @click="isSelectionMode ? cancelSelection() : null">
       <div class="header">
         <h1>定时提醒</h1>
+        <p class="subtitle">{{ nextAlarmText }}</p>
       </div>
       
       <div class="alarm-list">
@@ -481,7 +572,7 @@ function closeSettings() {
           @select="handleSelect"
         />
         <div v-if="alarms.length === 0" class="empty-state">
-          没有提醒，点击下方 + 号添加
+          点击下方 + 号添加提醒
         </div>
       </div>
       
@@ -675,11 +766,22 @@ html, body {
   overflow-y: auto;
 }
 
+.header {
+  margin-bottom: 20px;
+}
 .header h1 {
   font-size: 34px;
   font-weight: 700;
   color: #000;
-  margin-bottom: 20px;
+  margin-bottom: 4px;
+}
+
+.subtitle {
+  font-size: 13px;
+  color: #8e8e93;
+  margin: 0;
+  min-height: 20px; /* Reserve space */
+  line-height: 20px;
 }
 
 .empty-state {
@@ -751,6 +853,7 @@ html, body {
   animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
   border-radius: 20px;
   overflow: hidden;
+  padding-top: 10px;
 }
 
 @keyframes slideUp {
