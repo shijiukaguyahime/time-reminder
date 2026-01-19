@@ -1,0 +1,31 @@
+{
+  "productName": "定时提醒",
+  "version": "0.1.0",
+  "identifier": "com.timing.reminder",
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:1420",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "定时提醒",
+        "width": 400,
+        "height": 700,
+        "decorations": false,
+        "transparent": true,
+        "resizable": false
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.ico"]
+  }
+}
