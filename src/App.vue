@@ -402,7 +402,7 @@ function shouldTrigger(alarm: Alarm, now: dayjs.Dayjs): boolean {
 
 async function triggerAlarm(alarm: Alarm) {
   const title = '定时提醒';
-  const body = `${alarm.label || '时间到了'} - ${pad(alarm.hour)}:${pad(alarm.minute)}`;
+  const body = alarm.label || '时间到了';
   
   // 1. Check settings first
   if (settings.value.notificationStyle === 'theme') {
