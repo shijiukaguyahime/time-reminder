@@ -459,9 +459,7 @@ async function triggerAlarm(alarm: Alarm) {
   }
 }
 
-function pad(n: number) {
-  return n.toString().padStart(2, '0');
-}
+
 
 function closeThemeNotification() {
   showThemeNotification.value = false;
