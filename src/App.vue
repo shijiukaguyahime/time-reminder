@@ -10,7 +10,7 @@ import AlarmItem from './components/AlarmItem.vue';
 import CustomSelect from './components/CustomSelect.vue';
 
 // --- Types ---
-type RepeatType = 'once' | 'daily' | 'workdays' | 'mon_sat' | 'custom' | 'shift';
+type RepeatType = 'once' | 'daily' | 'workdays' | 'mon_sat' | 'custom' | 'shift' | 'hourly' | 'minutely' | 'custom_interval';
 
 interface Alarm {
   id: string;
@@ -25,6 +25,10 @@ interface Alarm {
       startDate: string; // YYYY-MM-DD
       workDays: number;
       restDays: number;
+    };
+    interval?: {
+      hours: number;
+      minutes: number;
     };
   };
   lastTriggered?: string; // YYYY-MM-DD
@@ -68,16 +72,21 @@ const form = ref({
   shiftStart: dayjs().format('YYYY-MM-DD'),
   shiftWork: 1,
   shiftRest: 1,
+  intervalHours: 1,
+  intervalMinutes: 30,
 });
 
 // --- Constants ---
 const REPEAT_OPTIONS: { label: string; value: RepeatType }[] = [
   { label: '仅一次', value: 'once' },
   { label: '每天', value: 'daily' },
+  { label: '每小时', value: 'hourly' },
+  { label: '每分钟', value: 'minutely' },
   { label: '工作日 (周一至周五)', value: 'workdays' },
   { label: '工作日 (周一至周六)', value: 'mon_sat' },
   { label: '自定义周', value: 'custom' },
   { label: '轮班/倒班', value: 'shift' },
+  { label: '自定义间隔', value: 'custom_interval' },
 ];
 
 const WEEKDAYS = [
@@ -194,27 +203,18 @@ function startScheduler() {
     // Update countdown text every minute
     updateNextAlarmText();
 
-    const currentHour = now.hour();
-    const currentMinute = now.minute();
-    const todayStr = now.format('YYYY-MM-DD');
-    const currentDay = now.day(); // 0-6
-
     alarms.value.forEach(alarm => {
       if (!alarm.enabled) return;
 
-      // Check if time matches
-      if (alarm.hour === currentHour && alarm.minute === currentMinute) {
-        // Check repeat logic
-        if (shouldTrigger(alarm, now, todayStr, currentDay)) {
-          triggerAlarm(alarm);
-          
-          // Handle 'once' logic: disable after trigger
-          if (alarm.repeat.type === 'once') {
-            alarm.enabled = false;
-          }
-          
-          alarm.lastTriggered = todayStr;
+      if (shouldTrigger(alarm, now)) {
+        triggerAlarm(alarm);
+        
+        // Handle 'once' logic: disable after trigger
+        if (alarm.repeat.type === 'once') {
+          alarm.enabled = false;
         }
+        
+        alarm.lastTriggered = now.format('YYYY-MM-DD');
       }
     });
   }, 1000);
@@ -246,13 +246,13 @@ function updateNextAlarmText() {
 
     let text = '';
     if (diffDays > 0) {
-      text = `${diffDays}天${diffHours}小时${diffMinutes}分后响铃`;
+      text = `${diffDays}天${diffHours}小时${diffMinutes}分后提醒`;
     } else if (diffHours > 0) {
-      text = `${diffHours}小时${diffMinutes}分后响铃`;
+      text = `${diffHours}小时${diffMinutes}分后提醒`;
     } else if (diffMinutes > 0) {
-      text = `${diffMinutes}分后响铃`;
+      text = `${diffMinutes}分后提醒`;
     } else {
-      text = '不到1分钟后响铃';
+      text = '不到1分钟后提醒';
     }
     nextAlarmText.value = text;
   } else {
@@ -261,10 +261,53 @@ function updateNextAlarmText() {
 }
 
 function getNextOccurrence(alarm: Alarm, now: dayjs.Dayjs): dayjs.Dayjs | null {
+  const { type, interval } = alarm.repeat;
+
+  // Interval Types
+  if (type === 'minutely') {
+    return now.add(1, 'minute').second(0).millisecond(0);
+  }
+
+  if (type === 'hourly') {
+    let next = now.minute(alarm.minute).second(0).millisecond(0);
+    if (next.isBefore(now)) {
+      next = next.add(1, 'hour');
+    }
+    return next;
+  }
+
+  if (type === 'custom_interval' && interval) {
+    const intervalMinutes = (interval.hours * 60) + interval.minutes;
+    if (intervalMinutes <= 0) return null;
+
+    let start = now.hour(alarm.hour).minute(alarm.minute).second(0).millisecond(0);
+    
+    // If start time is in the future today, that's the next occurrence
+    if (start.isAfter(now)) return start;
+
+    // If start time passed, calculate next slot
+    const diff = now.diff(start, 'minute');
+    const slotsPassed = Math.floor(diff / intervalMinutes);
+    const nextSlot = start.add((slotsPassed + 1) * intervalMinutes, 'minute');
+    
+    // If next slot is tomorrow (e.g. daily reset logic), 
+    // we should strictly check if we want to wrap around or stop.
+    // Assuming "Daily Reset" logic: triggers only happen same day? 
+    // Or if it wraps to tomorrow?
+    // Let's assume it wraps for calculation purposes to find *next* trigger.
+    // But our shouldTrigger logic uses "Daily Reset" (start time is today).
+    // So if nextSlot falls into tomorrow, the actual next trigger is tomorrow's start time.
+    
+    if (nextSlot.date() !== now.date()) {
+       return now.add(1, 'day').hour(alarm.hour).minute(alarm.minute).second(0).millisecond(0);
+    }
+    
+    return nextSlot;
+  }
+
+  // Standard Types
   let checkDate = now.hour(alarm.hour).minute(alarm.minute).second(0).millisecond(0);
   
-  // If the time has passed today (or is extremely close), start checking from tomorrow
-  // We use a small buffer (e.g. 59 seconds) to avoid skipping current minute if we are at :00
   if (checkDate.isBefore(now)) {
     checkDate = checkDate.add(1, 'day');
   }
@@ -304,33 +347,54 @@ function isDayValid(alarm: Alarm, date: dayjs.Dayjs): boolean {
     return false;
 }
 
-function shouldTrigger(alarm: Alarm, now: dayjs.Dayjs, todayStr: string, currentDay: number): boolean {
-  // Prevent double trigger in same minute (though interval checks seconds, safety net)
-  if (alarm.lastTriggered === todayStr && alarm.repeat.type === 'once') return false;
+function shouldTrigger(alarm: Alarm, now: dayjs.Dayjs): boolean {
+  const { type, customDays, shift, interval } = alarm.repeat;
+  const currentDay = now.day();
+  const currentHour = now.hour();
+  const currentMinute = now.minute();
+  
+  // Standard Types (Time Match Required)
+  const isTimeMatch = alarm.hour === currentHour && alarm.minute === currentMinute;
 
-  const { type, customDays, shift } = alarm.repeat;
-
-  if (type === 'once') {
-    return true;
-  }
-  
-  if (type === 'daily') return true;
-  
-  if (type === 'workdays') return currentDay >= 1 && currentDay <= 5;
-  
-  if (type === 'mon_sat') return currentDay >= 1 && currentDay <= 6;
-  
-  if (type === 'custom') return customDays.includes(currentDay);
+  if (type === 'once') return isTimeMatch;
+  if (type === 'daily') return isTimeMatch;
+  if (type === 'workdays') return isTimeMatch && currentDay >= 1 && currentDay <= 5;
+  if (type === 'mon_sat') return isTimeMatch && currentDay >= 1 && currentDay <= 6;
+  if (type === 'custom') return isTimeMatch && customDays.includes(currentDay);
   
   if (type === 'shift' && shift) {
-    const start = dayjs(shift.startDate);
-    const diffDays = now.diff(start, 'day');
-    if (diffDays < 0) return false; // Before start date
-    
-    const cycleLength = shift.workDays + shift.restDays;
-    const positionInCycle = diffDays % cycleLength;
-    
-    return positionInCycle < shift.workDays; // Trigger on work days
+      if (!isTimeMatch) return false;
+      const start = dayjs(shift.startDate);
+      const diffDays = now.diff(start, 'day');
+      if (diffDays < 0) return false;
+      
+      const cycleLength = shift.workDays + shift.restDays;
+      const positionInCycle = diffDays % cycleLength;
+      
+      return positionInCycle < shift.workDays;
+  }
+
+  // Interval Types
+  if (type === 'hourly') {
+      return currentMinute === alarm.minute;
+  }
+  
+  if (type === 'minutely') {
+      return true; 
+  }
+  
+  if (type === 'custom_interval' && interval) {
+      // Daily reset logic: Start from alarm.hour:alarm.minute TODAY
+      const startTime = dayjs().hour(alarm.hour).minute(alarm.minute).second(0).millisecond(0);
+      
+      // If now is before start time (e.g. 8:00 start, now is 7:00), don't trigger
+      if (now.isBefore(startTime)) return false;
+      
+      const diffMinutes = now.diff(startTime, 'minute');
+      const intervalMinutes = (interval.hours * 60) + interval.minutes;
+      
+      if (intervalMinutes <= 0) return false;
+      return diffMinutes % intervalMinutes === 0;
   }
 
   return false;
@@ -453,6 +517,8 @@ function openAdd() {
     shiftStart: dayjs().format('YYYY-MM-DD'),
     shiftWork: 1,
     shiftRest: 1,
+    intervalHours: 1,
+    intervalMinutes: 30,
   };
   isEditing.value = true;
 }
@@ -471,6 +537,8 @@ function openEdit(id: string) {
     shiftStart: alarm.repeat.shift?.startDate || dayjs().format('YYYY-MM-DD'),
     shiftWork: alarm.repeat.shift?.workDays || 1,
     shiftRest: alarm.repeat.shift?.restDays || 1,
+    intervalHours: alarm.repeat.interval?.hours ?? 1,
+    intervalMinutes: alarm.repeat.interval?.minutes ?? 30,
   };
   isEditing.value = true;
 }
@@ -490,6 +558,10 @@ function saveForm() {
         startDate: form.value.shiftStart,
         workDays: Number(form.value.shiftWork),
         restDays: Number(form.value.shiftRest),
+      } : undefined,
+      interval: form.value.repeatType === 'custom_interval' ? {
+        hours: Number(form.value.intervalHours),
+        minutes: Number(form.value.intervalMinutes),
       } : undefined
     }
   };
@@ -645,6 +717,20 @@ function closeSettings() {
             </div>
           </div>
         </div>
+
+        <!-- Custom Interval Settings -->
+        <div class="shift-settings" v-if="form.repeatType === 'custom_interval'">
+          <div class="form-row">
+            <div class="form-group half">
+              <label>间隔小时</label>
+              <input type="number" v-model="form.intervalHours" min="0" />
+            </div>
+            <div class="form-group half">
+              <label>间隔分钟</label>
+              <input type="number" v-model="form.intervalMinutes" min="0" />
+            </div>
+          </div>
+        </div>
         
         <button v-if="editingId" class="delete-btn" @click="deleteAlarm">
           删除提醒
@@ -683,28 +769,7 @@ function closeSettings() {
           </div>
         </div>
 
-        <div class="section-title">通知</div>
-        <div class="form-group no-padding">
-          <div class="setting-item">
-            <span>弹窗样式</span>
-            <div class="setting-control">
-              <button 
-                class="segment-btn" 
-                :class="{ active: settings.notificationStyle === 'system' }"
-                @click="settings.notificationStyle = 'system'"
-              >
-                系统
-              </button>
-              <button 
-                class="segment-btn" 
-                :class="{ active: settings.notificationStyle === 'theme' }"
-                @click="settings.notificationStyle = 'theme'"
-              >
-                主题
-              </button>
-            </div>
-          </div>
-        </div>
+
         
         <button class="delete-btn" style="color: #007aff; margin-top: 10px;" @click="testNotification">
           测试系统通知
@@ -993,6 +1058,19 @@ html, body {
 
 .form-group.half {
   flex: 1;
+  min-width: 0; /* Prevent overflow */
+  padding: 12px 8px; /* Reduce padding to fit content */
+}
+
+.form-group.half label {
+  font-size: 14px; /* Reduce font size */
+  white-space: nowrap;
+}
+
+.form-group.half input {
+  min-width: 30px; /* Allow smaller inputs */
+  width: 50px;
+  font-size: 16px;
 }
 
 .delete-btn {

@@ -1,8 +1,9 @@
 <script setup lang="ts">
+  import { computed } from 'vue';
 import { Check } from 'lucide-vue-next';
 
 // --- Types ---
-type RepeatType = 'once' | 'daily' | 'workdays' | 'mon_sat' | 'custom' | 'shift';
+type RepeatType = 'once' | 'daily' | 'workdays' | 'mon_sat' | 'custom' | 'shift' | 'hourly' | 'minutely' | 'custom_interval';
 
 interface Alarm {
   id: string;
@@ -17,6 +18,10 @@ interface Alarm {
       startDate: string;
       workDays: number;
       restDays: number;
+    };
+    interval?: {
+      hours: number;
+      minutes: number;
     };
   };
 }
@@ -41,7 +46,7 @@ function pad(n: number) {
 }
 
 function getRepeatText(repeat: Alarm['repeat']) {
-  const { type, customDays, shift } = repeat;
+  const { type, customDays, shift, interval } = repeat;
   const map: Record<string, string> = {
     once: '仅一次',
     daily: '每天',
@@ -49,6 +54,9 @@ function getRepeatText(repeat: Alarm['repeat']) {
     mon_sat: '工作日 (周一至周六)',
     custom: '自定义',
     shift: '轮班',
+    hourly: '每小时',
+    minutely: '每分钟',
+    custom_interval: '自定义间隔',
   };
   
   if (type === 'custom') {
@@ -59,6 +67,13 @@ function getRepeatText(repeat: Alarm['repeat']) {
   
   if (type === 'shift' && shift) {
     return `轮班 (${shift.workDays}班${shift.restDays}休)`;
+  }
+
+  if (type === 'custom_interval' && interval) {
+    const parts = [];
+    if (interval.hours > 0) parts.push(`${interval.hours}小时`);
+    if (interval.minutes > 0) parts.push(`${interval.minutes}分钟`);
+    return `每${parts.join('')}`;
   }
   
   return map[type] || type;
@@ -135,6 +150,14 @@ function handleClick() {
     emit('edit', props.alarm.id);
   }
 }
+
+const truncatedLabel = computed(() => {
+  const label = props.alarm.label || '';
+  if (label.length > 30) {
+    return label.slice(0, 30) + '...';
+  }
+  return label;
+});
 </script>
 
 <template>
@@ -158,8 +181,9 @@ function handleClick() {
           {{ pad(alarm.hour) }}:{{ pad(alarm.minute) }}
         </div>
         <div class="details">
-          <span class="label" v-if="alarm.label">{{ alarm.label }}，</span>
           <span class="repeat">{{ getRepeatText(alarm.repeat) }}</span>
+          <span class="separator" v-show="alarm.label">|</span>
+          <span class="label" v-show="alarm.label">{{ truncatedLabel }}</span>
         </div>
       </div>
       
@@ -248,6 +272,27 @@ function handleClick() {
   margin-top: 4px;
   font-size: 13px;
   color: #8e8e93;
+  display: flex;
+  align-items: center;
+}
+
+.repeat {
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.separator {
+  margin: 0 8px;
+  color: #e5e5ea;
+  flex-shrink: 0;
+}
+
+.label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 /* Switch Styles */
